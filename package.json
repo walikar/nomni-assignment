@@ -1,0 +1,16 @@
+{
+  "name": "marketplace-orders",
+  "private": true,
+  "workspaces": [
+    "api",
+    "admin"
+  ],
+  "scripts": {
+    "db:up": "docker compose up -d db",
+    "migrate": "npm run migrate -w api",
+    "dev:api": "npm run dev -w api",
+    "dev:admin": "npm run dev -w admin",
+    "test": "npm test -w api",
+    "typecheck": "npm run typecheck -w api && npm run typecheck -w admin"
+  }
+}

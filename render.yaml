@@ -1,0 +1,37 @@
+# Render Blueprint for the API. Database is Neon (DATABASE_URL); the admin is on Vercel.
+services:
+  - type: web
+    name: marketplace-orders-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm run start -w api
+    healthCheckPath: /health
+    # Monorepo: only redeploy when something the API uses changes (not admin-only commits).
+    buildFilter:
+      paths:
+        - api/**
+        - fixtures/**
+        - package.json
+        - package-lock.json
+        - render.yaml
+        - .node-version
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: DATABASE_URL
+        sync: false # Neon connection string, asked for when the Blueprint is created
+      - key: ADMIN_ORIGIN
+        sync: false # the Vercel URL of the admin, e.g. https://marketplace-orders.vercel.app
+      # Demo-only credentials, published in the README so reviewers can curl the live API.
+      # A real deployment would generate these and keep them in a secret store.
+      - key: UBER_CLIENT_SECRET
+        value: demo-uber-client-secret
+      - key: DOORDASH_WEBHOOK_TOKEN
+        value: demo-doordash-token
+      - key: UBER_ACCESS_TOKEN
+        value: demo-access-token
+      - key: MOCK_UBER
+        value: "1"
+      - key: DEMO_MODE
+        value: "1"
