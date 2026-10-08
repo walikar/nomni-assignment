@@ -4,8 +4,8 @@ Uber Eats and DoorDash orders arrive at **one webhook endpoint** and become **on
 
 **Live demo**
 
-- Admin: **ADMIN_URL**
-- API: **API_URL** (`POST /webhooks/orders`)
+- Admin: **https://nomni-assignment.vercel.app**
+- API: **https://marketplace-orders-api.onrender.com** (`POST /webhooks/orders`)
 
 The API runs on a free tier that sleeps when idle, so the first request can take up to a minute. In the admin, the **Try it** panel sends real, signed provider webhooks through the endpoint. Tick *Deliver twice at the same time* to watch two identical deliveries produce one order.
 
@@ -77,7 +77,7 @@ Send either one twice: still one order.
 **Against the live demo:** the same commands work with the demo credentials from `render.yaml`. These are published on purpose so reviewers can try it; real credentials would live in a secret store.
 
 ```bash
-API=API_URL
+API=https://marketplace-orders-api.onrender.com
 SIG=$(openssl dgst -sha256 -hmac "demo-uber-client-secret" fixtures/uber/webhook.orders-notification.json | awk '{print $NF}')
 curl -i -X POST $API/webhooks/orders -H "Content-Type: application/json" -H "X-Uber-Signature: $SIG" --data-binary @fixtures/uber/webhook.orders-notification.json
 curl -i -X POST $API/webhooks/orders -H "Content-Type: application/json" -H "Authorization: demo-doordash-token" --data-binary @fixtures/doordash/webhook.order-create.json
