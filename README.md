@@ -77,7 +77,7 @@ Send either one twice: still one order.
 **Against the live demo:** the same commands work with the demo credentials from `render.yaml`. These are published on purpose so reviewers can try it; real credentials would live in a secret store.
 
 ```bash
-API=https://marketplace-orders-api.onrender.com
+API=https://marketplace-orders-api.onrender.com.   
 SIG=$(openssl dgst -sha256 -hmac "demo-uber-client-secret" fixtures/uber/webhook.orders-notification.json | awk '{print $NF}')
 curl -i -X POST $API/webhooks/orders -H "Content-Type: application/json" -H "X-Uber-Signature: $SIG" --data-binary @fixtures/uber/webhook.orders-notification.json
 curl -i -X POST $API/webhooks/orders -H "Content-Type: application/json" -H "Authorization: demo-doordash-token" --data-binary @fixtures/doordash/webhook.order-create.json
