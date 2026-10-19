@@ -1,11 +1,22 @@
 import request from 'supertest';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { buildApp, countOrders, DOORDASH_TOKEN, fakeUber, fixture, pool, resetDb, signUber } from './helpers';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createApp } from '../src/app';
+import { fetchUberOrder } from '../src/services/uber.service';
+import { UpstreamError } from '../src/utils/errors';
+import { countOrdersInDb, DOORDASH_TOKEN, fakeUberGetOrder, pool, readFixture, resetDatabase, signUberBody } from './helpers';
 
-const uberBody = fixture('uber/webhook.orders-notification.json');
-const doordashBody = fixture('doordash/webhook.order-create.json');
+// Replace only fetchUberOrder (the call to Uber's API); everything else in uber.service stays real.
+vi.mock('../src/services/uber.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/uber.service')>();
+  return { ...actual, fetchUberOrder: vi.fn() };
+});
+const mockedFetchUberOrder = vi.mocked(fetchUberOrder);
 
-function postUber(app: ReturnType<typeof buildApp>, body = uberBody, signature = signUber(body)) {
+const app = createApp();
+const uberBody = readFixture('uber/webhook.orders-notification.json');
+const doordashBody = readFixture('doordash/webhook.order-create.json');
+
+function sendUberWebhook(body = uberBody, signature = signUberBody(body)) {
   return request(app)
     .post('/webhooks/orders')
     .set('Content-Type', 'application/json')
@@ -13,7 +24,7 @@ function postUber(app: ReturnType<typeof buildApp>, body = uberBody, signature =
     .send(body);
 }
 
-function postDoorDash(app: ReturnType<typeof buildApp>, body = doordashBody, token = DOORDASH_TOKEN) {
+function sendDoorDashWebhook(body = doordashBody, token = DOORDASH_TOKEN) {
   return request(app)
     .post('/webhooks/orders')
     .set('Content-Type', 'application/json')
@@ -21,48 +32,47 @@ function postDoorDash(app: ReturnType<typeof buildApp>, body = doordashBody, tok
     .send(body);
 }
 
-beforeEach(resetDb);
+beforeEach(async () => {
+  await resetDatabase();
+  mockedFetchUberOrder.mockReset();
+  mockedFetchUberOrder.mockImplementation((orderId) => fakeUberGetOrder(orderId));
+});
+
 afterAll(() => pool.end());
 
 describe('two identical webhooks arriving together create one order', () => {
   it('Uber', async () => {
-    const uber = fakeUber();
-    const app = buildApp(uber);
+    const [first, second] = await Promise.all([sendUberWebhook(), sendUberWebhook()]);
 
-    const [a, b] = await Promise.all([postUber(app), postUber(app)]);
-
-    expect([a.status, b.status]).toEqual([200, 200]);
-    expect(uber.calls).toHaveLength(2); // both really ran end to end
-    expect(await countOrders()).toBe(1);
+    expect([first.status, second.status]).toEqual([200, 200]);
+    expect(mockedFetchUberOrder).toHaveBeenCalledTimes(2); // both really ran end to end
+    expect(await countOrdersInDb()).toBe(1);
   });
 
   it('DoorDash', async () => {
-    const app = buildApp();
+    const [first, second] = await Promise.all([sendDoorDashWebhook(), sendDoorDashWebhook()]);
 
-    const [a, b] = await Promise.all([postDoorDash(app), postDoorDash(app)]);
-
-    expect([a.status, b.status]).toEqual([200, 200]);
-    expect(a.body.order_status).toBe('success');
-    expect(a.body.merchant_supplied_id).toBe(b.body.merchant_supplied_id);
-    expect(await countOrders()).toBe(1);
+    expect([first.status, second.status]).toEqual([200, 200]);
+    expect(first.body.order_status).toBe('success');
+    expect(first.body.merchant_supplied_id).toBe(second.body.merchant_supplied_id);
+    expect(await countOrdersInDb()).toBe(1);
   });
 
   it('holds under a burst of 20 concurrent deliveries', async () => {
-    const app = buildApp();
-    const responses = await Promise.all(Array.from({ length: 20 }, () => postDoorDash(app)));
-    expect(responses.every((r) => r.status === 200)).toBe(true);
-    expect(await countOrders()).toBe(1);
+    const responses = await Promise.all(Array.from({ length: 20 }, () => sendDoorDashWebhook()));
+
+    expect(responses.every((response) => response.status === 200)).toBe(true);
+    expect(await countOrdersInDb()).toBe(1);
   });
 });
 
 describe('Uber', () => {
-  it('fetches the full order and stores the mapped ticket; replies 200 with an empty body', async () => {
-    const uber = fakeUber();
-    const res = await postUber(buildApp(uber));
+  it('fetches the full order and stores it; replies 200 with an empty body', async () => {
+    const response = await sendUberWebhook();
 
-    expect(res.status).toBe(200);
-    expect(res.text).toBe('');
-    expect(uber.calls).toEqual(['153dd7f1-339d-4619-940c-418943c14636']);
+    expect(response.status).toBe(200);
+    expect(response.text).toBe('');
+    expect(mockedFetchUberOrder.mock.calls.map((call) => call[0])).toEqual(['153dd7f1-339d-4619-940c-418943c14636']);
 
     const { rows } = await pool.query('SELECT * FROM orders');
     expect(rows[0]).toMatchObject({
@@ -81,39 +91,39 @@ describe('Uber', () => {
   });
 
   it('rejects a bad signature without calling Uber', async () => {
-    const uber = fakeUber();
-    const res = await postUber(buildApp(uber), uberBody, signUber(uberBody, 'wrong-secret'));
-    expect(res.status).toBe(401);
-    expect(uber.calls).toHaveLength(0);
-    expect(await countOrders()).toBe(0);
+    const response = await sendUberWebhook(uberBody, signUberBody(uberBody, 'wrong-secret'));
+
+    expect(response.status).toBe(401);
+    expect(mockedFetchUberOrder).not.toHaveBeenCalled();
+    expect(await countOrdersInDb()).toBe(0);
   });
 
   it('rejects a missing signature', async () => {
-    const res = await request(buildApp()).post('/webhooks/orders').set('Content-Type', 'application/json').send(uberBody);
-    expect(res.status).toBe(401);
+    const response = await request(app).post('/webhooks/orders').set('Content-Type', 'application/json').send(uberBody);
+    expect(response.status).toBe(401);
   });
 
-  it('verifies against the raw bytes, so re-serialised JSON fails', async () => {
+  it('checks the signature against the raw bytes, so re-formatted JSON fails', async () => {
     const reformatted = JSON.stringify(JSON.parse(uberBody));
-    const res = await postUber(buildApp(), reformatted, signUber(uberBody));
-    expect(res.status).toBe(401);
+    const response = await sendUberWebhook(reformatted, signUberBody(uberBody));
+    expect(response.status).toBe(401);
   });
 
   it('answers non-2xx when Get Order fails, so Uber retries', async () => {
-    const app = buildApp({
-      async getOrder() {
-        const { UpstreamError } = await import('../src/providers/uberClient');
-        throw new UpstreamError('Uber Get Order returned 503', 503);
-      },
-    });
-    const res = await postUber(app);
-    expect(res.status).toBe(502);
-    expect(await countOrders()).toBe(0);
+    mockedFetchUberOrder.mockRejectedValue(new UpstreamError('Uber Get Order returned 503'));
+
+    const response = await sendUberWebhook();
+
+    expect(response.status).toBe(502);
+    expect(await countOrdersInDb()).toBe(0);
   });
 
-  it('a cancellation from Uber cancels the ticket', async () => {
-    await postUber(buildApp());
-    await postUber(buildApp(fakeUber({ current_state: 'CANCELED' })));
+  it('a cancellation from Uber cancels the order', async () => {
+    await sendUberWebhook();
+
+    mockedFetchUberOrder.mockImplementation((orderId) => fakeUberGetOrder(orderId, { current_state: 'CANCELED' }));
+    await sendUberWebhook();
+
     const { rows } = await pool.query('SELECT status, provider_status FROM orders');
     expect(rows).toEqual([{ status: 'cancelled', provider_status: 'CANCELED' }]);
   });
@@ -121,11 +131,11 @@ describe('Uber', () => {
 
 describe('DoorDash', () => {
   it('stores the order and confirms synchronously', async () => {
-    const res = await postDoorDash(buildApp());
-    expect(res.status).toBe(200);
+    const response = await sendDoorDashWebhook();
+    expect(response.status).toBe(200);
 
     const { rows } = await pool.query('SELECT * FROM orders');
-    expect(res.body).toEqual({ merchant_supplied_id: rows[0].id, order_status: 'success' });
+    expect(response.body).toEqual({ merchant_supplied_id: rows[0].id, order_status: 'success' });
     expect(rows[0]).toMatchObject({
       provider: 'doordash',
       external_order_id: 'abc12345',
@@ -140,49 +150,52 @@ describe('DoorDash', () => {
   });
 
   it('rejects a wrong Authorization token', async () => {
-    const res = await postDoorDash(buildApp(), doordashBody, 'nope');
-    expect(res.status).toBe(401);
-    expect(await countOrders()).toBe(0);
+    const response = await sendDoorDashWebhook(doordashBody, 'nope');
+
+    expect(response.status).toBe(401);
+    expect(await countOrdersInDb()).toBe(0);
   });
 
   it('fails the order (non-2xx with a failure_reason) when the payload is unusable', async () => {
     const body = JSON.parse(doordashBody);
     delete body.order.subtotal;
-    const res = await postDoorDash(buildApp(), JSON.stringify(body));
-    expect(res.status).toBe(400);
-    expect(res.body.order_status).toBe('fail');
-    expect(res.body.failure_reason).toMatch(/subtotal/);
+
+    const response = await sendDoorDashWebhook(JSON.stringify(body));
+
+    expect(response.status).toBe(400);
+    expect(response.body.order_status).toBe('fail');
+    expect(response.body.failure_reason).toMatch(/subtotal/);
   });
 });
 
-describe('detection and upsert behaviour', () => {
+describe('detection and saving', () => {
   it('detects the provider from the body, ignoring any provider hint in the URL', async () => {
-    const res = await request(buildApp())
+    const response = await request(app)
       .post('/webhooks/orders?provider=uber_eats')
       .set('Content-Type', 'application/json')
       .set('Authorization', DOORDASH_TOKEN)
       .send(doordashBody);
-    expect(res.status).toBe(200);
+
+    expect(response.status).toBe(200);
     const { rows } = await pool.query('SELECT provider FROM orders');
     expect(rows).toEqual([{ provider: 'doordash' }]);
   });
 
   it('rejects payloads from no known provider, and invalid JSON', async () => {
-    const app = buildApp();
     const unknown = await request(app).post('/webhooks/orders').set('Content-Type', 'application/json').send('{"provider":"uber"}');
     expect(unknown.status).toBe(400);
+
     const broken = await request(app).post('/webhooks/orders').set('Content-Type', 'application/json').send('{"tax": 300 "x": 1}');
     expect(broken.status).toBe(400);
   });
 
-  it('a redelivered webhook updates the order but never moves its status backwards', async () => {
-    const app = buildApp();
-    await postDoorDash(app);
+  it('a repeated webhook updates the order but never moves its status backwards', async () => {
+    await sendDoorDashWebhook();
     await pool.query("UPDATE orders SET status = 'preparing'");
 
     const changed = JSON.parse(doordashBody);
     changed.order.consumer.phone = '+15550001111';
-    await postDoorDash(app, JSON.stringify(changed));
+    await sendDoorDashWebhook(JSON.stringify(changed));
 
     const { rows } = await pool.query("SELECT status, customer->>'phone' AS phone FROM orders");
     expect(rows).toEqual([{ status: 'preparing', phone: '+15550001111' }]);

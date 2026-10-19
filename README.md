@@ -83,12 +83,53 @@ curl -i -X POST $API/webhooks/orders -H "Content-Type: application/json" -H "X-U
 curl -i -X POST $API/webhooks/orders -H "Content-Type: application/json" -H "Authorization: demo-doordash-token" --data-binary @fixtures/doordash/webhook.order-create.json
 ```
 
+## Code layout (api/)
+
+```
+src/
+  index.ts                  starts the server (runs migrations, then listens)
+  app.ts                    wires the routes together
+  config.ts                 every setting, read from the environment
+  db.ts                     Postgres connection pool
+  routes/
+    webhooks.ts             POST /webhooks/orders: the one endpoint for both providers
+    orders.ts               GET /api/orders, GET /api/orders/:id, POST /api/orders/:id/advance
+    demo.ts                 POST /api/demo/orders: the admin's "Try it" panel
+    uber-mock.ts            stand-in for Uber's Get Order API (MOCK_UBER=1)
+  services/
+    uber.service.ts         signature check, Get Order call, Uber -> internal order
+    doordash.service.ts     token check, DoorDash -> internal order
+    orders.service.ts       all SQL: save (upsert), list, get, move status forward
+    demo.service.ts         builds sample webhooks from /fixtures
+  utils/                    detect-provider, order-status, validation helpers, error types
+  types/order.ts            the internal order shape
+  db/migrate.ts + migrations/
+```
+
+## Code layout (admin/)
+
+Next.js Pages Router + Tailwind.
+
+```
+src/
+  pages/
+    _app.tsx                shared layout and global styles
+    orders/index.tsx        /orders: list with filters, search, sort (all in the URL)
+    orders/[id].tsx         /orders/:id: items, totals, status button, debug JSON
+  components/               OrdersTable, OrderFilters, Pagination, DemoPanel, LineItemsCard,
+                            StatusCard, CustomerCard, badges, loading/empty/error states
+  api.ts                    every call to the API
+  types/index.ts            Order, OrdersPage, filters
+  constants.ts              providers, statuses, sort options
+  utils/                    money/date formatting, URL <-> filters, remembered list URL
+```
+
 ## How the endpoint works
 
 `POST /webhooks/orders`
 
 1. **Read the raw body.** `express.raw` on this route only — Uber's signature is over the exact bytes, so the body must not be parsed and re-serialised before verification.
-2. **Detect the provider from the body's shape** (`api/src/webhooks/detect.ts`). Query parameters and any `provider` field are ignored.
+2. **Detect the provider from the body's shape** (`api/src/utils/detect-provider.ts`). Query parameters and any `provider` field are ignored.
    - Uber: `event_type` starts with `orders.` and `meta.resource_id` is a string.
    - DoorDash: `event.type` is a string and `order` is an object.
    - Anything else → `400`.

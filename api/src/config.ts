@@ -1,44 +1,43 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 
-export interface Config {
-  port: number;
-  databaseUrl: string;
-  uberClientSecret: string;
-  uberAccessToken: string;
-  uberApiBase: string;
-  mockUber: boolean;
-  doordashWebhookToken: string;
-  adminOrigins: string[];
-  demoMode: boolean;
-  /** Where the API can reach itself (demo endpoint, Uber mock). */
-  selfUrl: string;
-}
+dotenv.config();
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const port = Number(env.PORT ?? 4000);
-  const selfUrl = `http://127.0.0.1:${port}`;
-  const mockUber = env.MOCK_UBER === '1';
-  return {
-    port,
-    databaseUrl: env.DATABASE_URL ?? 'postgres://localhost:5432/marketplace_orders',
-    uberClientSecret: required(env, 'UBER_CLIENT_SECRET'),
-    uberAccessToken: env.UBER_ACCESS_TOKEN ?? '',
-    // With the mock on and no explicit base, Get Order goes to this same process.
-    uberApiBase: env.UBER_API_BASE ?? (mockUber ? `${selfUrl}/mock/uber` : 'https://api.uber.com'),
-    mockUber,
-    doordashWebhookToken: required(env, 'DOORDASH_WEBHOOK_TOKEN'),
-    // Comma-separated, e.g. the Vercel production URL plus localhost.
-    adminOrigins: (env.ADMIN_ORIGIN ?? 'http://localhost:3000')
-      .split(',')
-      .map((o) => o.trim().replace(/\/$/, ''))
-      .filter(Boolean),
-    demoMode: env.DEMO_MODE === '1',
-    selfUrl,
-  };
-}
-
-function required(env: NodeJS.ProcessEnv, key: string): string {
-  const value = env[key];
-  if (!value) throw new Error(`Missing required env var ${key} (see api/.env.example)`);
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required env var ${name} (see api/.env.example)`);
+  }
   return value;
 }
+
+const PORT = Number(process.env.PORT || 4000);
+const MOCK_UBER = process.env.MOCK_UBER === '1';
+
+// All settings in one place. Read from api/.env locally, and from the host's environment in production.
+export const config = {
+  PORT,
+  DATABASE_URL: process.env.DATABASE_URL || 'postgres://localhost:5432/marketplace_orders',
+
+  // --- Uber ---
+  // Uber signs every webhook with this secret (HMAC-SHA256).
+  UBER_CLIENT_SECRET: requireEnv('UBER_CLIENT_SECRET'),
+  // Bearer token for Uber's Get Order API.
+  UBER_ACCESS_TOKEN: process.env.UBER_ACCESS_TOKEN || '',
+  // With MOCK_UBER=1 we serve Uber's sample order ourselves, because there is no live Uber account.
+  MOCK_UBER,
+  UBER_API_BASE: process.env.UBER_API_BASE || (MOCK_UBER ? `http://127.0.0.1:${PORT}/mock/uber` : 'https://api.uber.com'),
+
+  // --- DoorDash ---
+  // The Auth Token configured on the DoorDash webhook. DoorDash sends it in the Authorization header.
+  DOORDASH_WEBHOOK_TOKEN: requireEnv('DOORDASH_WEBHOOK_TOKEN'),
+
+  // --- Admin website ---
+  // Websites allowed to call /api from the browser. Comma-separated.
+  ADMIN_ORIGINS: (process.env.ADMIN_ORIGIN || 'http://localhost:3000')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean),
+
+  // Turns on the "Try it" demo endpoint.
+  DEMO_MODE: process.env.DEMO_MODE === '1',
+};

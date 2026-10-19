@@ -12,6 +12,10 @@ console.log(`Admin will call the API at: ${apiUrl ?? 'http://localhost:4000 (def
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // The admin's home page is the orders list.
+  async redirects() {
+    return [{ source: '/', destination: '/orders', permanent: false }];
+  },
 };
 
 export default nextConfig;

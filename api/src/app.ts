@@ -1,25 +1,13 @@
 import cors from 'cors';
-import express, { type ErrorRequestHandler } from 'express';
-import type { Pool } from './db/pool';
-import { demoRouter } from './demo/router';
-import { ordersRouter } from './orders/router';
-import { PayloadError } from './orders/types';
-import { UpstreamError, type UberClient } from './providers/uberClient';
-import { uberMockRouter } from './providers/uberMock';
-import { webhookRouter } from './webhooks/router';
+import express from 'express';
+import { config } from './config';
+import demoRouter from './routes/demo';
+import ordersRouter from './routes/orders';
+import uberMockRouter from './routes/uber-mock';
+import webhooksRouter from './routes/webhooks';
 
-export interface AppDeps {
-  pool: Pool;
-  uber: UberClient;
-  uberClientSecret: string;
-  doordashWebhookToken: string;
-  adminOrigins?: string[];
-  mockUber?: boolean;
-  demoMode?: boolean;
-  selfUrl?: () => string;
-}
-
-export function createApp(deps: AppDeps) {
+// Builds the Express app. Kept separate from index.ts so tests can use the app without starting a server.
+export function createApp() {
   const app = express();
   app.disable('x-powered-by');
 
@@ -33,41 +21,22 @@ export function createApp(deps: AppDeps) {
       },
     });
   });
+
   app.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
-  app.use(webhookRouter(deps));
 
-  const api = express.Router();
-  api.use(cors({ origin: deps.adminOrigins ?? ['http://localhost:3000'] }));
-  api.use(ordersRouter(deps.pool));
-  api.use(
-    demoRouter({
-      enabled: Boolean(deps.demoMode && deps.selfUrl),
-      pool: deps.pool,
-      selfUrl: deps.selfUrl ?? (() => ''),
-      uberClientSecret: deps.uberClientSecret,
-      doordashWebhookToken: deps.doordashWebhookToken,
-    }),
-  );
-  app.use('/api', api);
+  // Webhooks read the raw body themselves (for Uber's signature), so no JSON parser here.
+  app.use('/webhooks', webhooksRouter);
 
-  if (deps.mockUber) app.use('/mock/uber', uberMockRouter());
+  // Everything under /api is called by the admin website.
+  app.use('/api', cors({ origin: config.ADMIN_ORIGINS }));
+  app.use('/api/orders', express.json(), ordersRouter);
+  app.use('/api/demo', express.json(), demoRouter);
 
-  app.use(errorHandler);
+  if (config.MOCK_UBER) {
+    app.use('/mock/uber', uberMockRouter);
+  }
+
   return app;
 }
-
-const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
-  if (err instanceof PayloadError) {
-    res.status(422).json({ error: 'invalid_payload', message: err.message });
-    return;
-  }
-  if (err instanceof UpstreamError) {
-    console.warn(err.message);
-    res.status(502).json({ error: 'upstream_error', message: err.message });
-    return;
-  }
-  console.error(err);
-  res.status(500).json({ error: 'internal_error' });
-};

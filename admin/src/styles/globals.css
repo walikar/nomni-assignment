@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The colour palette, unchanged from the original submission.
+   Tailwind colours (bg-surface, text-muted, bg-accent, ...) point at these variables in tailwind.config.js,
+   so dark mode follows the system setting automatically. */
+:root {
+  --bg: #f6f6f4;
+  --surface: #ffffff;
+  --text: #1c1c1a;
+  --muted: #6b6b66;
+  --border: #e4e3de;
+  --accent: #1f5f4a;
+  --accent-text: #ffffff;
+  --focus: #2f6fdb;
+  --skeleton: #ecebe6;
+  --uber: #0f7a45;
+  --uber-bg: #e6f4ec;
+  --doordash: #c2341b;
+  --doordash-bg: #fcebe7;
+  --s-new: #1e4fa8;
+  --s-new-bg: #e7eefb;
+  --s-accepted: #6a3fb5;
+  --s-accepted-bg: #f0eafb;
+  --s-preparing: #8a5a00;
+  --s-preparing-bg: #fdf3dc;
+  --s-ready: #0f7a45;
+  --s-ready-bg: #e6f4ec;
+  --s-completed: #4a4a46;
+  --s-completed-bg: #ecebe6;
+  --s-cancelled: #b42318;
+  --s-cancelled-bg: #fdeceb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413;
+    --surface: #1d1d1b;
+    --text: #ecebe6;
+    --muted: #a3a29b;
+    --border: #2f2f2c;
+    --accent: #5fbf9a;
+    --accent-text: #0e1a15;
+    --focus: #7aa7ff;
+    --skeleton: #2a2a27;
+    --uber: #6fd3a0;
+    --uber-bg: #183026;
+    --doordash: #ff8f78;
+    --doordash-bg: #3a1d17;
+    --s-new: #9dbcff;
+    --s-new-bg: #1c2740;
+    --s-accepted: #c8b0ff;
+    --s-accepted-bg: #2a2140;
+    --s-preparing: #f3c66b;
+    --s-preparing-bg: #352a12;
+    --s-ready: #6fd3a0;
+    --s-ready-bg: #183026;
+    --s-completed: #c7c6bf;
+    --s-completed-bg: #2a2a27;
+    --s-cancelled: #ff9b92;
+    --s-cancelled-bg: #3a1c1a;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}

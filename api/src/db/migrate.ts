@@ -1,30 +1,36 @@
-import { readdir, readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import { createPool, type Pool } from './pool';
+import fs from 'fs';
+import path from 'path';
+import pool from '../db';
 
-const MIGRATIONS_DIR = fileURLToPath(new URL('./migrations/', import.meta.url));
+const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 
-/** Applies any migrations in ./migrations that haven't run yet, each in its own transaction. */
-export async function migrate(pool: Pool): Promise<string[]> {
-  await pool.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
-    name text PRIMARY KEY,
-    applied_at timestamptz NOT NULL DEFAULT now()
-  )`);
-  const { rows } = await pool.query<{ name: string }>('SELECT name FROM schema_migrations');
-  const applied = new Set(rows.map((r) => r.name));
-  const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
+// Runs every .sql file in ./migrations that hasn't run yet, in name order (001_, 002_, ...).
+// Each file runs in its own transaction, and is recorded in schema_migrations so it never runs twice.
+export async function runMigrations(): Promise<string[]> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      name       text PRIMARY KEY,
+      applied_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
 
-  const ran: string[] = [];
+  const alreadyApplied = await pool.query<{ name: string }>('SELECT name FROM schema_migrations');
+  const appliedNames = new Set(alreadyApplied.rows.map((row) => row.name));
+
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
+  const newlyApplied: string[] = [];
+
   for (const file of files) {
-    if (applied.has(file)) continue;
-    const sql = await readFile(MIGRATIONS_DIR + file, 'utf8');
+    if (appliedNames.has(file)) continue;
+
+    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       await client.query(sql);
       await client.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file]);
       await client.query('COMMIT');
-      ran.push(file);
+      newlyApplied.push(file);
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -32,13 +38,19 @@ export async function migrate(pool: Pool): Promise<string[]> {
       client.release();
     }
   }
-  return ran;
+
+  return newlyApplied;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  await import('dotenv/config');
-  const pool = createPool(process.env.DATABASE_URL ?? 'postgres://localhost:5432/marketplace_orders');
-  const ran = await migrate(pool);
-  console.log(ran.length ? `Applied: ${ran.join(', ')}` : 'Database is up to date');
-  await pool.end();
+// `npm run migrate` runs this file directly.
+if (require.main === module) {
+  runMigrations()
+    .then((applied) => {
+      console.log(applied.length > 0 ? `Applied: ${applied.join(', ')}` : 'Database is up to date');
+      return pool.end();
+    })
+    .catch((err) => {
+      console.error('Migration failed:', err);
+      process.exit(1);
+    });
 }

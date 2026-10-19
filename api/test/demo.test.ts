@@ -1,61 +1,68 @@
-import type { AddressInfo } from 'node:net';
-import type { Server } from 'node:http';
+import type { Server } from 'http';
+import type { AddressInfo } from 'net';
 import request from 'supertest';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app';
-import { countOrders, DOORDASH_TOKEN, fakeUber, pool, resetDb, UBER_SECRET } from './helpers';
+import { config } from '../src/config';
+import { fetchUberOrder } from '../src/services/uber.service';
+import { countOrdersInDb, fakeUberGetOrder, pool, resetDatabase } from './helpers';
 
+vi.mock('../src/services/uber.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/uber.service')>();
+  return { ...actual, fetchUberOrder: vi.fn() };
+});
+
+// The demo endpoint POSTs to its own /webhooks/orders, so it needs a real listening server.
 let server: Server;
-let base = '';
-
-function app(demoMode: boolean) {
-  return createApp({
-    pool,
-    uber: fakeUber(),
-    uberClientSecret: UBER_SECRET,
-    doordashWebhookToken: DOORDASH_TOKEN,
-    demoMode,
-    selfUrl: () => base,
-  });
-}
+let baseUrl = '';
 
 beforeAll(async () => {
-  // The demo endpoint POSTs to its own /webhooks/orders, so it needs a real listening server.
-  server = app(true).listen(0);
-  await new Promise((r) => server.once('listening', r));
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  server = createApp().listen(0);
+  await new Promise((resolve) => server.once('listening', resolve));
+  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
+
 afterAll(async () => {
-  await new Promise((r) => server.close(r));
+  await new Promise((resolve) => server.close(resolve));
   await pool.end();
 });
-beforeEach(resetDb);
+
+beforeEach(async () => {
+  await resetDatabase();
+  vi.mocked(fetchUberOrder).mockImplementation((orderId) => fakeUberGetOrder(orderId));
+});
 
 describe('demo endpoint', () => {
   it('sends a signed Uber webhook through the real endpoint', async () => {
-    const res = await request(base).post('/api/demo/orders').send({ provider: 'uber_eats' });
-    expect(res.status).toBe(201);
-    expect(res.body.deliveries).toEqual([{ status: 200, body: null }]);
-    expect(res.body.orders_stored).toBe(1);
-    expect(res.body.order_id).toMatch(/^[0-9a-f-]{36}$/);
+    const response = await request(baseUrl).post('/api/demo/orders').send({ provider: 'uber_eats' });
+
+    expect(response.status).toBe(201);
+    expect(response.body.deliveries).toEqual([{ status: 200, body: null }]);
+    expect(response.body.orders_stored).toBe(1);
+    expect(response.body.order_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('two identical DoorDash deliveries at once still store one order', async () => {
-    const res = await request(base).post('/api/demo/orders').send({ provider: 'doordash', times: 2 });
-    expect(res.status).toBe(201);
-    expect(res.body.deliveries.map((d: { status: number }) => d.status)).toEqual([200, 200]);
-    expect(res.body.orders_stored).toBe(1);
-    expect(await countOrders()).toBe(1);
+    const response = await request(baseUrl).post('/api/demo/orders').send({ provider: 'doordash', times: 2 });
+
+    expect(response.status).toBe(201);
+    expect(response.body.deliveries.map((delivery: { status: number }) => delivery.status)).toEqual([200, 200]);
+    expect(response.body.orders_stored).toBe(1);
+    expect(await countOrdersInDb()).toBe(1);
   });
 
   it('rejects an unknown provider', async () => {
-    const res = await request(base).post('/api/demo/orders').send({ provider: 'grubhub' });
-    expect(res.status).toBe(400);
+    const response = await request(baseUrl).post('/api/demo/orders').send({ provider: 'grubhub' });
+    expect(response.status).toBe(400);
   });
 
   it('is off unless DEMO_MODE is set', async () => {
-    const off = app(false);
-    expect((await request(off).get('/api/demo')).body).toEqual({ enabled: false });
-    expect((await request(off).post('/api/demo/orders').send({ provider: 'doordash' })).status).toBe(404);
+    config.DEMO_MODE = false;
+    try {
+      expect((await request(baseUrl).get('/api/demo')).body).toEqual({ enabled: false });
+      expect((await request(baseUrl).post('/api/demo/orders').send({ provider: 'doordash' })).status).toBe(404);
+    } finally {
+      config.DEMO_MODE = true;
+    }
   });
 });
